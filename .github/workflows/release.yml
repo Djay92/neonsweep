@@ -44,33 +44,41 @@ jobs:
             const { version } = require('./package.json');
             if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Stable releases require a numeric x.y.z version.');
             core.setOutput('tag', `v${version}`);
-            try {
-              const { data: release } = await github.rest.repos.getReleaseByTag({ ...context.repo, tag: `v${version}` });
-              const required = [`NeonSweep-Setup-${version}.exe`, `NeonSweep-Setup-${version}.exe.blockmap`, 'latest.yml'];
-              const complete = !release.draft && required.every(name => release.assets.some(asset => asset.name === name && asset.size > 0));
-              core.setOutput('publish', complete ? 'false' : 'true');
-              if (!complete && !release.draft) {
-                await github.rest.repos.updateRelease({ ...context.repo, release_id: release.id, draft: true });
-              }
-              await core.summary.addRaw(complete
-                ? `Version ${version} already exists. Bump package.json to publish an update.`
-                : `Repairing the incomplete release for ${version}.`).write();
-            } catch (error) {
-              if (error.status !== 404) throw error;
-              core.setOutput('publish', 'true');
+            const releases = await github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 });
+            const matches = releases.filter(item => item.tag_name === `v${version}`);
+            if (matches.length > 1) throw new Error(`More than one release uses v${version}; consolidate the drafts before retrying.`);
+            const release = matches[0];
+            const required = [`NeonSweep-Setup-${version}.exe`, `NeonSweep-Setup-${version}.exe.blockmap`, 'latest.yml'];
+            const complete = release && !release.draft && required.every(name => release.assets.some(asset => asset.name === name && asset.size > 0));
+            core.setOutput('publish', complete ? 'false' : 'true');
+            if (!release) {
+              await github.rest.repos.createRelease({ ...context.repo, tag_name: `v${version}`, target_commitish: context.sha, name: `NeonSweep ${version}`, draft: true });
+            } else if (!complete && !release.draft) {
+              await github.rest.repos.updateRelease({ ...context.repo, release_id: release.id, draft: true });
             }
+            await core.summary.addRaw(complete
+              ? `Version ${version} already exists. Bump package.json to publish an update.`
+              : `Preparing the single draft for ${version}.`).write();
       - run: npm ci
         if: steps.version.outputs.publish == 'true'
-      - name: Build and publish installer, blockmap, and update manifest
+      - name: Build installer and update manifest
         if: steps.version.outputs.publish == 'true'
-        run: npm run release -- --config.win.signAndEditExecutable=true
+        run: npm run dist -- --config.win.signAndEditExecutable=true
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
       - name: Verify packaged source and update checksums
         if: steps.version.outputs.publish == 'true'
         run: npm run verify:package
+      - name: Upload all update files to the single draft
+        if: steps.version.outputs.publish == 'true'
+        shell: pwsh
+        run: |
+          $releaseVersion = node -p "require('./package.json').version"
+          gh release upload "v$releaseVersion" "dist/NeonSweep-Setup-$releaseVersion.exe" "dist/NeonSweep-Setup-$releaseVersion.exe.blockmap" "dist/latest.yml" --clobber --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish only after all update files are uploaded
         if: steps.version.outputs.publish == 'true'
         uses: actions/github-script@v7
