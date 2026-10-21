@@ -1,0 +1,15 @@
+node_modules/
+dist/
+archives/
+.impeccable/
+.env
+.env.*
+*.log
+*.pfx
+*.p12
+accounts.json
+Local State
+audit-dm.js
+setup-app.js
+AUDIT.md
+

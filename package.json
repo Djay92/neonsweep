@@ -1,0 +1,67 @@
+{
+  "name": "neonsweep",
+  "version": "5.0.0",
+  "description": "NeonSweep — a local Discord cleanup workspace",
+  "author": "Djay92",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Djay92/neonsweep.git"
+  },
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.js",
+    "test:electron": "node tests/run-electron-smoke.cjs",
+    "verify:package": "node scripts/verify-package.cjs",
+    "dist": "electron-builder --win nsis --publish never",
+    "dist:portable": "electron-builder --win portable --publish never",
+    "release": "electron-builder --win nsis --publish always"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "electron": "^44.9.3",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "package.json"
+    ],
+    "appId": "com.local.discordredactpro",
+    "productName": "NeonSweep",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Djay92",
+        "repo": "neonsweep",
+        "releaseType": "draft"
+      }
+    ],
+    "forceCodeSigning": false,
+    "win": {
+      "icon": "src/assets/icon.ico",
+      "signAndEditExecutable": false,
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "artifactName": "NeonSweep-Setup-${version}.exe",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "shortcutName": "NeonSweep",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": false
+    },
+    "portable": {
+      "artifactName": "NeonSweep-${version}-Portable.exe"
+    }
+  }
+}

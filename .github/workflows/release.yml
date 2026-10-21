@@ -1,0 +1,98 @@
+name: Test and release NeonSweep
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: neonsweep-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:electron
+
+  release:
+    needs: verify
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Check whether this version is already released
+        id: version
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { version } = require('./package.json');
+            if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Stable releases require a numeric x.y.z version.');
+            core.setOutput('tag', `v${version}`);
+            try {
+              const { data: release } = await github.rest.repos.getReleaseByTag({ ...context.repo, tag: `v${version}` });
+              const required = [`NeonSweep-Setup-${version}.exe`, `NeonSweep-Setup-${version}.exe.blockmap`, 'latest.yml'];
+              const complete = !release.draft && required.every(name => release.assets.some(asset => asset.name === name && asset.size > 0));
+              core.setOutput('publish', complete ? 'false' : 'true');
+              if (!complete && !release.draft) {
+                await github.rest.repos.updateRelease({ ...context.repo, release_id: release.id, draft: true });
+              }
+              await core.summary.addRaw(complete
+                ? `Version ${version} already exists. Bump package.json to publish an update.`
+                : `Repairing the incomplete release for ${version}.`).write();
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              core.setOutput('publish', 'true');
+            }
+      - run: npm ci
+        if: steps.version.outputs.publish == 'true'
+      - name: Build and publish installer, blockmap, and update manifest
+        if: steps.version.outputs.publish == 'true'
+        run: npm run release -- --config.win.signAndEditExecutable=true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      - name: Verify packaged source and update checksums
+        if: steps.version.outputs.publish == 'true'
+        run: npm run verify:package
+      - name: Publish only after all update files are uploaded
+        if: steps.version.outputs.publish == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { version } = require('./package.json');
+            const { data: releases } = await github.rest.repos.listReleases({ ...context.repo, per_page: 100 });
+            const release = releases.find(item => item.tag_name === `v${version}`);
+            if (!release) throw new Error('The built draft release was not found.');
+            const required = [`NeonSweep-Setup-${version}.exe`, `NeonSweep-Setup-${version}.exe.blockmap`, 'latest.yml'];
+            for (const name of required) {
+              if (!release.assets.some(asset => asset.name === name && asset.size > 0)) throw new Error(`Missing release asset: ${name}`);
+            }
+            await github.rest.repos.updateRelease({ ...context.repo, release_id: release.id, draft: false, make_latest: 'true' });
+      - name: Save installer as a workflow artifact
+        if: steps.version.outputs.publish == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: NeonSweep-Windows
+          path: |
+            dist/NeonSweep-Setup-*.exe
+            dist/NeonSweep-Setup-*.exe.blockmap
+            dist/latest.yml
+          if-no-files-found: error
+

@@ -1,0 +1,34 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const asar = require('@electron/asar');
+const yaml = require('js-yaml');
+const root = path.join(__dirname, '..');
+const pkg = require('../package.json');
+const dist = path.join(root, 'dist');
+const resources = path.join(dist, 'win-unpacked', 'resources');
+const archive = path.join(resources, 'app.asar');
+const extract = (file) => asar.extractFile(archive, file.split('/').join(path.sep));
+const packed = JSON.parse(extract('package.json'));
+assert.equal(packed.name, pkg.name);
+assert.equal(packed.version, pkg.version);
+for (const file of ['main.js', 'preload.js', 'src/engine.js', 'src/request-pacer.js', 'src/job-progress.js', 'src/progress-math.js', 'src/update-manager.js', 'src/index.html', 'src/styles.css', 'src/renderer.js', 'src/assets/icon.png', 'src/assets/icon.ico', 'src/assets/instrument-sans-latin.woff2', 'src/assets/OFL-Instrument-Sans.txt']) {
+  assert.ok(extract(file).equals(fs.readFileSync(path.join(root, file))), `Packaged file differs from source: ${file}`);
+}
+assert.ok(!asar.listPackage(archive).some((file) => /(?:^|[\\/])(?:archives|accounts\.json|\.env|\.git)(?:[\\/]|$)/.test(file)), 'Private files must not ship');
+const feed = yaml.load(fs.readFileSync(path.join(resources, 'app-update.yml'), 'utf8'));
+assert.equal(feed.provider, 'github');
+assert.equal(feed.owner, 'Djay92');
+assert.equal(feed.repo, 'neonsweep');
+assert.equal(feed.token, undefined, 'Updater credentials must never be bundled');
+const manifest = yaml.load(fs.readFileSync(path.join(dist, 'latest.yml'), 'utf8'));
+assert.equal(manifest.version, pkg.version);
+const installer = `NeonSweep-Setup-${pkg.version}.exe`;
+const entry = manifest.files.find((file) => file.url === installer);
+assert.ok(entry, 'The manifest must name this installer');
+const bytes = fs.readFileSync(path.join(dist, installer));
+assert.equal(entry.size, bytes.length);
+assert.equal(entry.sha512, crypto.createHash('sha512').update(bytes).digest('base64'));
+assert.ok(fs.statSync(path.join(dist, installer + '.blockmap')).size > 0);
+console.log(`Verified NeonSweep ${pkg.version}: runtime source, local assets, public feed, installer checksum, and blockmap.`);
