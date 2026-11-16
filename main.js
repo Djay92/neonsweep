@@ -124,69 +124,89 @@ ipcMain.handle('save-account', (_, acc) => {
   return loadSavedAccounts();
 });
 
+const BROWSER_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36';
+
+// Tokens copied from DevTools often arrive wrapped in quotes.
+function cleanToken(token) {
+  return String(token || '').trim().replace(/^["']+|["']+$/g, '').trim();
+}
+
+// Plain-language errors only: Axios errors carry the Authorization header.
+async function discordGet(token, url) {
+  try {
+    const res = await require('axios').get(`https://discord.com/api/v9${url}`, {
+      timeout: 20000,
+      headers: { Authorization: cleanToken(token), 'User-Agent': BROWSER_USER_AGENT }
+    });
+    return res.data;
+  } catch (err) {
+    const status = err.response?.status;
+    let message;
+    if (status === 401) message = 'Discord rejected this token. It has expired or been signed out. Log in with Discord again to get a new one.';
+    else if (status === 403) message = 'Discord blocked this request. Open Discord, complete any verification it asks for, then try again.';
+    else if (status === 429) message = 'Discord is rate limiting this connection. Wait a minute and try again.';
+    else if (status) message = `Discord returned an error (HTTP ${status}). Try again shortly.`;
+    else message = 'Could not reach Discord. Check your internet connection and try again.';
+    const error = new Error(message);
+    error.status = status;
+    throw error;
+  }
+}
+
 ipcMain.handle('open-discord-login', async () => {
+  // A fresh in-memory session per login: a cached, signed-out Discord session
+  // would otherwise hand back its dead token before the login form appears.
+  const loginSession = session.fromPartition('discord-login');
+  await loginSession.clearStorageData();
+  // Older versions logged in through the default profile and left a session on disk.
+  session.defaultSession.clearStorageData({ origin: 'https://discord.com' }).catch(() => {});
+  loginSession.setUserAgent(BROWSER_USER_AGENT);
+
   return new Promise((resolve) => {
     let resolved = false;
+    const tried = new Set();
     const loginWin = new BrowserWindow({
       width: 520,
       height: 720,
       parent: mainWindow,
       modal: true,
-      webPreferences: { nodeIntegration: false, contextIsolation: true }
+      webPreferences: { nodeIntegration: false, contextIsolation: true, session: loginSession }
     });
     loginWin.setMenuBarVisibility(false);
 
-    const filter = { urls: ['https://discord.com/api/v9/*'] };
+    const filter = { urls: ['https://discord.com/api/*'] };
+    const finish = (token) => {
+      if (resolved) return;
+      resolved = true;
+      loginSession.webRequest.onBeforeSendHeaders(filter, null);
+      if (!loginWin.isDestroyed()) loginWin.close();
+      resolve(token);
+    };
     const listener = (details, callback) => {
-      const auth = details.requestHeaders['Authorization'] || details.requestHeaders['authorization'];
-      if (auth && !auth.startsWith('Bot ') && auth.length > 25 && !resolved) {
-        resolved = true;
-        session.defaultSession.webRequest.onBeforeSendHeaders(filter, null);
-        loginWin.close();
-        resolve(auth);
-      }
       callback({ requestHeaders: details.requestHeaders });
+      const auth = details.requestHeaders['Authorization'] || details.requestHeaders['authorization'];
+      if (!auth || resolved || auth.startsWith('Bot ') || auth.length <= 25 || tried.has(auth)) return;
+      tried.add(auth);
+      // Only accept a token Discord itself confirms; keep the window open otherwise.
+      discordGet(auth, '/users/@me').then(() => finish(auth)).catch((err) => {
+        if (err.status !== 401) tried.delete(auth);
+      });
     };
 
-    session.defaultSession.webRequest.onBeforeSendHeaders(filter, listener);
+    loginSession.webRequest.onBeforeSendHeaders(filter, listener);
     loginWin.loadURL('https://discord.com/login');
-
-    loginWin.on('closed', () => {
-      if (!resolved) {
-        session.defaultSession.webRequest.onBeforeSendHeaders(filter, null);
-        resolve(null);
-      }
-    });
+    loginWin.on('closed', () => finish(null));
   });
 });
 
-ipcMain.handle('validate-token', async (_, token) => {
-  // Temporary client creation for validation
-  const client = require('axios').create({
-    baseURL: 'https://discord.com/api/v9',
-    headers: { Authorization: token.trim(), 'Content-Type': 'application/json' }
-  });
-  const res = await client.get('/users/@me');
-  return res.data;
-});
+ipcMain.handle('validate-token', (_, token) => discordGet(token, '/users/@me'));
 
 ipcMain.handle('fetch-workspace', async (_, token) => {
-  const client = require('axios').create({
-    baseURL: 'https://discord.com/api/v9',
-    headers: { Authorization: token.trim(), 'Content-Type': 'application/json' }
-  });
-  const [guilds, dms] = await Promise.all([client.get('/users/@me/guilds'), client.get('/users/@me/channels')]);
-  return { guilds: guilds.data, dms: dms.data };
+  const [guilds, dms] = await Promise.all([discordGet(token, '/users/@me/guilds'), discordGet(token, '/users/@me/channels')]);
+  return { guilds, dms };
 });
 
-ipcMain.handle('fetch-guild-channels', async (_, { token, guildId }) => {
-  const client = require('axios').create({
-    baseURL: 'https://discord.com/api/v9',
-    headers: { Authorization: token.trim(), 'Content-Type': 'application/json' }
-  });
-  const res = await client.get(`/guilds/${guildId}/channels`);
-  return res.data;
-});
+ipcMain.handle('fetch-guild-channels', (_, { token, guildId }) => discordGet(token, `/guilds/${guildId}/channels`));
 
 ipcMain.handle('select-folder', async () => {
   const res = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });

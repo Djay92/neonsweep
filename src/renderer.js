@@ -411,8 +411,9 @@ async function authenticateWithToken(token) {
     document.getElementById('userStatus').classList.remove('connected');
     document.getElementById('guildsList').innerHTML = '';
     document.getElementById('dmsList').innerHTML = '';
-    addLog(`Connection failed: ${e.message}`);
-    setupNotice('Connection failed. Check your token or try logging in again.');
+    const reason = String(e.message || '').replace(/^Error invoking remote method '[^']+': (Error: )?/, '') || 'Check your token or try logging in again.';
+    addLog(`Connection failed: ${reason}`);
+    setupNotice(`Connection failed. ${reason}`);
   } finally {
     accountConnecting = false;
     accountControls.forEach((id) => { document.getElementById(id).disabled = false; });
@@ -420,8 +421,10 @@ async function authenticateWithToken(token) {
 }
 
 document.getElementById('connectBtn').addEventListener('click', () => {
-  const token = document.getElementById('tokenInput').value.trim();
+  // Tokens copied from DevTools often arrive wrapped in quotes.
+  const token = document.getElementById('tokenInput').value.trim().replace(/^["']+|["']+$/g, '').trim();
   if (!token) return alert('Paste your Discord token or click Log in with Discord.');
+  document.getElementById('tokenInput').value = token;
   authenticateWithToken(token);
 });
 
